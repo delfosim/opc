@@ -33,15 +33,18 @@ const (
 //Connection represents the interface for the connection to the OPC server.
 type Connection interface {
 	Add(...string) error
+	AddInConn(...string) error
 	Remove(string)
+	ReadItems() ([]Item, []string)
 	Read() map[string]interface{}
 	ReadItem(string) Item
-	Write(string, interface{}) error
 	Close()
+	GetNameServer() string
 }
 
 //Item stores the result of an OPC item from the OPC server.
 type Item struct {
+	Tag       string
 	Value     interface{}
 	Quality   int16
 	Timestamp time.Time

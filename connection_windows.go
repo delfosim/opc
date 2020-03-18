@@ -4,7 +4,6 @@ package opc
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -132,7 +131,7 @@ func NewAutomationObject() *AutomationObject {
 
 	opc, err := unknown.QueryInterface(ole.IID_IDispatch)
 	if err != nil {
-		fmt.Println("Could not QueryInterface")
+		log.Println("Could not QueryInterface")
 		return &AutomationObject{}
 	}
 	object := AutomationObject{
@@ -192,7 +191,11 @@ func (ai *AutomationItems) readFromOpc(opcitem *ole.IDispatch) (Item, error) {
 
 	//read tag from opc server and monitor duration in seconds
 	t := time.Now()
+	// Uncomment the line below to collect from Cache
 	_, err := oleutil.CallMethod(opcitem, "Read", oPCCache, &v, &q, &ts)
+
+	// Uncomment the line below to collect from device
+	//_, err := oleutil.CallMethod(opcitem, "Read", oPCDevice, &v, &q, &ts)
 	opcReadsDuration.Observe(time.Since(t).Seconds())
 
 	if err != nil {
@@ -206,18 +209,6 @@ func (ai *AutomationItems) readFromOpc(opcitem *ole.IDispatch) (Item, error) {
 		Quality:   q.Value().(int16),
 		Timestamp: ts.Value().(time.Time),
 	}, nil
-}
-
-//writeToOPC writes value to opc tag and return an error
-func (ai *AutomationItems) writeToOpc(opcitem *ole.IDispatch, value interface{}) error {
-	_, err := oleutil.CallMethod(opcitem, "Write", value)
-	if err != nil {
-		// TODO: Prometheus Monitoring
-		//opcWritesCounter.WithLabelValues("failed").Inc()
-		return err
-	}
-	//opcWritesCounter.WithLabelValues("failed").Inc()
-	return nil
 }
 
 //Close closes the OLE objects in AutomationItems.
@@ -281,34 +272,27 @@ func (conn *opcConnectionImpl) ReadItem(tag string) Item {
 	return Item{}
 }
 
-//Write writes a value to the OPC Server.
-func (conn *opcConnectionImpl) Write(tag string, value interface{}) error {
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	opcitem, ok := conn.AutomationItems.items[tag]
-	if ok {
-		return conn.AutomationItems.writeToOpc(opcitem, value)
-	}
-	log.Printf("Tag %s not found. Add it first before writing to it.", tag)
-	return errors.New("No Write performed")
-}
-
-//Read returns a map of the values, quality and timestamp of all added tags.
-func (conn *opcConnectionImpl) ReadAll() []Item {
+// ReadItems returns a map of the values of all added tags.
+func (conn *opcConnectionImpl) ReadItems() ([]Item, []string) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	items := []Item{}
+	errors := []string{}
 	for tag, opcitem := range conn.AutomationItems.items {
 		item, err := conn.AutomationItems.readFromOpc(opcitem)
 		if err != nil {
+			errors = append(errors, tag)
 			log.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
-			conn.fix()
-			continue
 		}
-
+		item.Tag = tag
 		items = append(items, item)
 	}
-	return items
+
+	if len(errors) > 0 {
+		conn.fix()
+	}
+
+	return items, errors
 }
 
 //Read returns a map of the values of all added tags.
@@ -316,15 +300,22 @@ func (conn *opcConnectionImpl) Read() map[string]interface{} {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	allValues := map[string]interface{}{}
+	allErrors := []string{}
 	for tag, opcitem := range conn.AutomationItems.items {
 		item, err := conn.AutomationItems.readFromOpc(opcitem)
 		if err != nil {
+			allErrors = append(allErrors, tag)
 			log.Printf("Cannot read %s: %s. Trying to fix.", tag, err)
-			conn.fix()
-			break
+			// conn.fix()
+			// break
 		}
 		allValues[tag] = item.Value
 	}
+
+	if len(allErrors) > 0 {
+		conn.fix()
+	}
+
 	return allValues
 }
 
@@ -359,6 +350,10 @@ func (conn *opcConnectionImpl) Close() {
 	if conn.AutomationItems != nil {
 		conn.AutomationObject.Close()
 	}
+}
+
+func (conn *opcConnectionImpl) GetNameServer() string {
+	return conn.Server
 }
 
 //NewConnection establishes a connection to the OpcServer object.
